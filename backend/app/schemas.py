@@ -28,6 +28,34 @@ class EntryPayload(BaseModel):
     remark: str | None = None
 
 
+class ImportPayload(BaseModel):
+    """批量导入时提交的文件内容（前端读取文本后整体上传）。"""
+
+    filename: str | None = None
+    content: str = ""
+
+
+class ImportFailure(BaseModel):
+    """逐行校验失败的记录：标明文件行号与具体原因，便于用户只改这几行。"""
+
+    line: int
+    发电机编号: str | None = None
+    reason: str
+
+
+class ImportResult(BaseModel):
+    """批量导入结果：成功的行直接入库，失败的行单列原因；同一文件重复导入只记一次。"""
+
+    ok: bool
+    duplicated: bool = False
+    total: int = 0
+    imported: int = 0
+    failed: int = 0
+    message: str
+    failures: list[ImportFailure] = Field(default_factory=list)
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
 
 class WindfarmEntry(BaseModel):
     """风电场站明细结构。"""

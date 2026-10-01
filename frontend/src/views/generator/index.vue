@@ -8,6 +8,16 @@
       <div class="page-actions">
         <button class="btn primary" type="button" @click="openCreate">登记发电机</button>
         <button class="btn" type="button" @click="exportRows">导出发电机清单</button>
+        <button class="btn" type="button" :disabled="importing" @click="triggerImport">
+          {{ importing ? '导入中…' : '导入历史检测记录' }}
+        </button>
+        <input
+          ref="fileInput"
+          type="file"
+          accept=".csv,text/csv,text/plain"
+          class="hidden-file"
+          @change="handleImportFile"
+        />
       </div>
     </header>
 
@@ -26,6 +36,32 @@
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
     </form>
+
+    <div v-if="importResult" class="import-panel">
+      <div class="import-head">
+        <strong>导入结果：{{ importResult.message }}</strong>
+        <button class="link" type="button" @click="importResult = null">关闭</button>
+      </div>
+      <p v-if="importResult.total" class="import-summary">
+        共解析 {{ importResult.total }} 行，成功 {{ importResult.imported }} 行，失败 {{ importResult.failed }} 行
+      </p>
+      <table v-if="importResult.failures.length" class="data-table import-failures">
+        <thead>
+          <tr>
+            <th>文件行号</th>
+            <th>发电机编号</th>
+            <th>未通过原因</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="failure in importResult.failures" :key="failure.line">
+            <td>第 {{ failure.line }} 行</td>
+            <td>{{ failure.发电机编号 ?? '—' }}</td>
+            <td class="error-text">{{ failure.reason }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <table class="data-table">
       <thead>
@@ -69,6 +105,22 @@ import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
 
+interface ImportFailure {
+  line: number
+  发电机编号: string | null
+  reason: string
+}
+
+interface ImportResultPayload {
+  ok: boolean
+  duplicated: boolean
+  total: number
+  imported: number
+  failed: number
+  message: string
+  failures: ImportFailure[]
+}
+
 const ENDPOINT = '/api/generator'
 const columns = ["发电机编号", "所属机组", "额定电压", "绝缘电阻", "轴承温度", "上次检测日", "检测结论", "发电机状态"]
 const actions = ["提交检测", "判定绝缘异常", "更换发电机"]
@@ -80,6 +132,19 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+const fileInput = ref<HTMLInputElement | null>(null)
+const importing = ref(false)
+const importResult = ref<ImportResultPayload | null>(null)
+
+// 列表与导出共用当前查询条件：前端按发电机编号检索，对应后端的 keyword 参数。
+function currentQuery() {
+  const params = new URLSearchParams()
+  const keyword = filters.value['发电机编号']?.trim()
+  if (keyword) {
+    params.set('keyword', keyword)
+  }
+  return params
+}
 
 function resetFilters() {
   filters.value = {}
@@ -87,7 +152,41 @@ function resetFilters() {
 }
 
 function exportRows() {
-  window.open(`${ENDPOINT}/export`, '_blank')
+  // 导出当前条件下的全部记录，与列表页筛选保持一致。
+  const query = currentQuery().toString()
+  window.open(`${ENDPOINT}/export${query ? `?${query}` : ''}`, '_blank')
+}
+
+function triggerImport() {
+  importResult.value = null
+  fileInput.value?.click()
+}
+
+async function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) {
+    return
+  }
+  importing.value = true
+  errorMessage.value = ''
+  try {
+    const content = await file.text()
+    const response = await request(`${ENDPOINT}/import`, {
+      method: 'POST',
+      body: JSON.stringify({ filename: file.name, content }),
+    })
+    if (!response.ok) {
+      throw new Error('历史检测记录导入失败，请稍后重试')
+    }
+    importResult.value = (await response.json()) as ImportResultPayload
+    await reload()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '历史检测记录导入失败'
+  } finally {
+    importing.value = false
+  }
 }
 
 function openCreate() {
@@ -112,7 +211,7 @@ async function runAction(action: string, row: Row) {
 
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
+  const query = currentQuery().toString()
   try {
     const response = await request(`${ENDPOINT}?${query}`)
     if (!response.ok) {
@@ -128,3 +227,35 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.page-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.hidden-file {
+  display: none;
+}
+.import-panel {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.import-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+.import-summary {
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.import-failures {
+  margin-top: 8px;
+}
+</style>

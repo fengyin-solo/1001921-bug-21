@@ -1,18 +1,21 @@
-"""发电机接口：维护发电机，覆盖提交检测、判定绝缘异常、更换发电机等动作。"""
+"""发电机接口：维护发电机，覆盖提交检测、判定绝缘异常、更换发电机、清单导出与历史记录导入。"""
 from __future__ import annotations
 
-from typing import Any
+import csv
+import io
+from datetime import date
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
-from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.generator import GeneratorService
+from app.schemas import ActionResult, EntryPayload, ImportPayload, ImportResult, PageResult
+from app.services.generator import FIELDS, GeneratorService
 
 router = APIRouter(prefix="/api/generator", tags=["发电机"])
 
 service = GeneratorService()
 
-LIST_FIELDS = ["发电机编号", "所属机组", "额定电压", "绝缘电阻", "轴承温度", "上次检测日", "检测结论", "发电机状态"]
 STATUSES = ["待检测", "检测合格", "绝缘偏低", "已更换"]
 
 
@@ -28,6 +31,35 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/export")
+def export_entries(
+    keyword: str | None = Query(default=None, description="与列表页一致的编号检索条件"),
+    status: str | None = Query(default=None, description="与列表页一致的状态过滤条件"),
+) -> StreamingResponse:
+    """按当前过滤条件导出全量清单（不分页），列与发电机详情页一致、不重复。"""
+    items = service.export_entries(keyword=keyword, status=status)
+    buffer = io.StringIO()
+    buffer.write("﻿")  # Excel 识别 UTF-8，避免中文表头乱码
+    writer = csv.DictWriter(buffer, fieldnames=FIELDS, extrasaction="ignore")
+    writer.writeheader()
+    for item in items:
+        writer.writerow(item)
+    buffer.seek(0)
+    filename = f"发电机清单_{date.today():%Y%m%d}.csv"
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@router.post("/import", response_model=ImportResult)
+def import_history(payload: ImportPayload) -> ImportResult:
+    """批量导入历史检测记录：逐行校验，坏行单独列出并说明原因，成功行保留入库。"""
+    result = service.import_history(payload.content)
+    return ImportResult(**result)
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -56,10 +88,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出发电机清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "generator", "total": total, "items": items}
